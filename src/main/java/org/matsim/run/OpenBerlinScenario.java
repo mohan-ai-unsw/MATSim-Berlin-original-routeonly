@@ -33,12 +33,6 @@ import org.matsim.simwrapper.SimWrapperConfigGroup;
 import org.matsim.simwrapper.SimWrapperModule;
 import picocli.CommandLine;
 import playground.vsp.scoring.IncomeDependentUtilityOfMoneyPersonScoringParameters;
-import org.matsim.contrib.decongestion.DecongestionConfigGroup;
-import org.matsim.contrib.decongestion.DecongestionModule;
-import org.matsim.contrib.roadpricing.RoadPricing;
-import org.matsim.contrib.roadpricing.RoadPricingConfigGroup;
-import org.matsim.contrib.roadpricing.RoadPricingScheme;
-import org.matsim.contrib.roadpricing.RoadPricingUtils;
 
 import java.lang.reflect.Method;
 import java.util.List;
@@ -137,10 +131,6 @@ public class OpenBerlinScenario extends MATSimApplication {
 		// Bicycle config must be present
 		ConfigUtils.addOrGetModule(config, BicycleConfigGroup.class);
 
-		// --- Dynamic decongestion pricing (Ihab-style) ---
-		ConfigUtils.addOrGetModule(config, RoadPricingConfigGroup.class);
-		DecongestionConfigGroup dc = ConfigUtils.addOrGetModule(config, DecongestionConfigGroup.class);
-		configureDecongestion(dc);
 
 		// Add emissions configuration
 		EmissionsConfigGroup eConfig = ConfigUtils.addOrGetModule(config, EmissionsConfigGroup.class);
@@ -158,19 +148,6 @@ public class OpenBerlinScenario extends MATSimApplication {
 	@Override
 	protected void prepareScenario(Scenario scenario) {
 
-		// Bootstrap road pricing scheme so RoadPricing module can start.
-		// Decongestion is expected to update tolls dynamically during iterations.
-		var scheme = RoadPricingUtils.addOrGetMutableRoadPricingScheme(scenario);
-		RoadPricingUtils.setType(scheme, RoadPricingScheme.TOLL_TYPE_LINK);
-		RoadPricingUtils.setName(scheme, "bootstrap-zero-toll");
-		RoadPricingUtils.setDescription(scheme, "Bootstrap scheme to satisfy RoadPricing startup; decongestion updates tolls dynamically.");
-		RoadPricingUtils.createAndAddGeneralCost(
-			scheme,
-			org.matsim.core.utils.misc.Time.parseTime("00:00:00"),
-			org.matsim.core.utils.misc.Time.parseTime("36:00:00"),
-			0.0
-		);
-
 		// add hbefa link attributes.
 		HbefaRoadTypeMapping roadTypeMapping = OsmHbefaMapping.build();
 		roadTypeMapping.addHbefaMappings(scenario.getNetwork());
@@ -184,14 +161,6 @@ public class OpenBerlinScenario extends MATSimApplication {
 		controler.addOverridingModule(new TravelTimeBinding());
 
 		controler.addOverridingModule(new QsimTimingModule());
-
-		controler.addOverridingModule(new DecongestionModule());
-
-		// FIX:
-		// RoadPricing is enabled below, so it MUST have a scheme (or a toll links file),
-		// otherwise it crashes at startup. Provide a minimal "zero toll" bootstrap scheme.
-
-		RoadPricing.configure(controler);
 
 		// AdvancedScoring is specific to matsim-berlin!
 		if (ConfigUtils.hasModule(controler.getConfig(), AdvancedScoringConfigGroup.class)) {
@@ -208,141 +177,6 @@ public class OpenBerlinScenario extends MATSimApplication {
 		controler.addOverridingModule(new PersonMoneyEventsAnalysisModule());
 	}
 
-	// IMPORTANT: these methods must be at CLASS LEVEL (not inside any other method)
-
-
-	private static void configureDecongestion(DecongestionConfigGroup dc) {
-		// This MATSim version uses fraction-of-iterations + update interval API.
-		// Your config lastIteration is 500, so:
-		// Paper setup:
-		// k_update = 1        -> update every iteration
-		// k^s = 1.0           -> smoothing/blending factor
-		// d_min = 1 sec       -> tolerated average delay threshold
-		// Kp = 0.003, Ki = 0, Kd = 0
-		// use MSA             -> smoothen toll levels over iterations
-
-		dc.setEnableDecongestionPricing(true);
-
-		// In this MATSim version, "decongestionApproach" selects the controller type:
-		// BangBang, PID, P_MC. For the paper setup we keep PID but set Ki=Kd=0.
-		dc.setDecongestionApproach(DecongestionConfigGroup.DecongestionApproach.PID);
-
-		dc.setInitialToll(0.0);
-
-		// k_update = 1
-		dc.setUpdatePriceInterval(1);
-
-		// k^s = 1.0
-		dc.setTollBlendFactor(1.0);
-
-		// d_min = 1 sec
-		dc.setToleratedAverageDelaySec(1.0);
-
-		// Controller gains
-		dc.setKp(0.003);
-		dc.setKi(0.0);
-		dc.setKd(0.0);
-
-		// Use successive averages (MSA) for toll smoothing
-		dc.setMsa(true);
-
-		// When to start/stop adjusting prices (keep your current schedule)
-		dc.setFractionOfIterationsToStartPriceAdjustment(0.00);
-		dc.setFractionOfIterationsToEndPriceAdjustment(1.00);
-
-		dc.setWriteOutputIteration(100);
-
-		// NOTE on paper's "T = 900 sec" (15-min time bin):
-		// This DecongestionConfigGroup does not expose a parameter for T in your version,
-		// so it cannot be set here via config; it may be hard-coded or configured elsewhere.
-	}
-
-	/**
-	 * Tries to invoke the first existing setter among methodNames.
-	 * It will try multiple numeric parameter types to survive API changes:
-	 * int/Integer, long/Long, double/Double.
-	 */
-	private static boolean invokeFirstExistingNumber(Object target, String[] methodNames, int value) {
-		Class<?>[] paramTypes = new Class<?>[]{
-			int.class, Integer.class,
-			long.class, Long.class,
-			double.class, Double.class
-		};
-
-		Object[] values = new Object[]{
-			value, Integer.valueOf(value),
-			(long) value, Long.valueOf(value),
-			(double) value, Double.valueOf(value)
-		};
-
-		for (String name : methodNames) {
-			for (int i = 0; i < paramTypes.length; i++) {
-				try {
-					Method m = target.getClass().getMethod(name, paramTypes[i]);
-					m.invoke(target, values[i]);
-					return true;
-				} catch (NoSuchMethodException ignored) {
-					// try next overload / next name
-				} catch (Exception e) {
-					throw new RuntimeException("Failed invoking " + name + "(" + paramTypes[i].getSimpleName() + ")", e);
-				}
-			}
-		}
-
-		System.err.println("Decongestion config: none of these methods exist on " + target.getClass().getName() + ": " +
-			String.join(", ", methodNames));
-		return false;
-	}
-
-	private static boolean invokeFirstExistingBoolean(Object target, String[] methodNames, boolean value) {
-		for (String name : methodNames) {
-			try {
-				Method m = target.getClass().getMethod(name, boolean.class);
-				m.invoke(target, value);
-				return true;
-			} catch (NoSuchMethodException ignored) {
-				// try next
-			} catch (Exception e) {
-				throw new RuntimeException("Failed invoking " + name + "(boolean)", e);
-			}
-		}
-		System.err.println("Decongestion config: none of these boolean methods exist on " + target.getClass().getName() + ": " +
-			String.join(", ", methodNames));
-		return false;
-	}
-
-	private static boolean invokeEnumIfPresent(Object target, String[] methodNames, String enumConstant) {
-		for (String name : methodNames) {
-			for (Method m : target.getClass().getMethods()) {
-				if (!m.getName().equals(name) || m.getParameterCount() != 1) continue;
-
-				Class<?> p = m.getParameterTypes()[0];
-				if (!p.isEnum()) continue;
-
-				try {
-					@SuppressWarnings({"rawtypes", "unchecked"})
-					Object value = Enum.valueOf((Class<? extends Enum>) p, enumConstant);
-					m.invoke(target, value);
-					return true;
-				} catch (IllegalArgumentException ignored) {
-					// enum doesn't have that constant
-				} catch (Exception e) {
-					throw new RuntimeException("Failed invoking " + name + "(" + p.getSimpleName() + "=" + enumConstant + ")", e);
-				}
-			}
-		}
-		return false;
-	}
-
-	private static void printAllSingleArgSetters(Object target) {
-		System.err.println("Decongestion config: available setters on " + target.getClass().getName() + ":");
-		for (Method m : target.getClass().getMethods()) {
-			if (m.getName().startsWith("set") && m.getParameterCount() == 1) {
-				System.err.println("  " + m.getName() + "(" + m.getParameterTypes()[0].getSimpleName() + ")");
-			}
-		}
-	}
-// ... existing code ...
 	/**
 	 * Add travel time bindings for ride and freight modes, which are not actually network modes.
 	 */
