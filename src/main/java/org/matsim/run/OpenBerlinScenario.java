@@ -97,7 +97,7 @@ public class OpenBerlinScenario extends MATSimApplication {
 			config.replanning().addStrategySettings(
 				new ReplanningConfigGroup.StrategySettings()
 					.setStrategyName(planSelector)
-					.setWeight(subpopulation.equals("person") ? 0.85 : 1.0)
+					.setWeight(subpopulation.equals("person") ? 0.95 : 1.0)
 					.setSubpopulation(subpopulation)
 			);
 
@@ -108,20 +108,6 @@ public class OpenBerlinScenario extends MATSimApplication {
 					.setSubpopulation(subpopulation)
 			);
 		}
-
-		config.replanning().addStrategySettings(
-			new ReplanningConfigGroup.StrategySettings()
-				.setStrategyName(DefaultPlanStrategiesModule.DefaultStrategy.TimeAllocationMutator)
-				.setWeight(0.05)
-				.setSubpopulation("person")
-		);
-
-		config.replanning().addStrategySettings(
-			new ReplanningConfigGroup.StrategySettings()
-				.setStrategyName(DefaultPlanStrategiesModule.DefaultStrategy.SubtourModeChoice)
-				.setWeight(0.05)
-				.setSubpopulation("person")
-		);
 
 		// Need to switch to warning for best score
 		if (planSelector.equals(DefaultPlanStrategiesModule.DefaultSelector.BestScore)) {
